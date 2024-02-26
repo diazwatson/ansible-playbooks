@@ -1,0 +1,119 @@
+##################################################
+# DO Community Playbooks: LEMP on Ubuntu 20.04
+##################################################
+---
+- hosts: all
+  become: true
+  vars_files:
+    - vars/default.yml
+
+  tasks:
+    - name: Update and install software-properties-common
+      apt:
+        name: software-properties-common
+        update_cache: yes
+        state: latest
+
+    - name: Add ondrej/php repository
+      apt_repository:
+        repo: ppa:ondrej/php
+        state: present
+
+    - name: Update apt cache after adding new repository
+      apt:
+        update_cache: yes
+
+    - name: Install Prerequisites
+      apt: name={{ item }} update_cache=yes state=latest force_apt_get=yes
+      loop: [ 'aptitude' ]
+
+    - name: Install LEMP Packages
+      apt: name={{ item }} update_cache=yes state=latest
+      loop: [ 'nginx', 'mariadb-server', 'python3-pymysql', 'python3-certbot-nginx', 'elasticsearch', 'php8.2-fpm', 'php8.2-intl', 'php8.2-soap', 'php8.2-xml', 'php8.2-zip', 'php8.2-dom', 'php8.2-cli', 'php8.2-common', 'php8.2-mysql', 'php8.2-gd', 'php8.2-mbstring', 'php8.2-curl', 'php8.2-bcmath', 'git', 'ufw' ]
+      tags:
+        - packages
+    
+    # Nginx Configuration
+    - name: Sets Nginx conf file
+      template:
+        src: "files/nginx.conf.j2"
+        dest: "/etc/nginx/sites-available/{{ http_conf }}"
+
+    - name: Enables new site
+      file:
+        src: "/etc/nginx/sites-available/{{ http_conf }}"
+        dest: "/etc/nginx/sites-enabled/{{ http_conf }}"
+        state: link
+      notify: Reload Nginx
+
+    - name: Removes "default" site
+      file:
+        path: "/etc/nginx/sites-enabled/default"
+        state: absent
+      notify: Reload Nginx
+
+    # Sets Up Composer
+    - name: Check if composer exists
+      stat:
+        path: /usr/local/bin/composer
+        checksum_algorithm: sha256
+      register: composer_file
+    - name: Download Composer
+      get_url:
+        url: https://getcomposer.org/installer
+        dest: /root/composer-setup.php
+      when: >
+        composer_file.stat.isreg is not defined or
+        not composer_file.stat.isreg
+    - name: Add composer
+      command: php /root/composer-setup.php --version=2.2.6 --install-dir=/usr/local/bin --filename=composer
+      when: >
+        composer_file.stat.isreg is not defined or
+        not composer_file.stat.isreg
+    
+
+    # MySQL Configuration
+    - name: Sets the root password
+      mysql_user:
+        name: root
+        password: "{{ mysql_root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Removes all anonymous user accounts
+      mysql_user:
+        name: ''
+        host_all: yes
+        state: absent
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    - name: Removes the MySQL test database
+      mysql_db:
+        name: test
+        state: absent
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    # UFW Configuration
+    - name: "UFW - Allow HTTP on port {{ http_port }}"
+      ufw:
+        rule: allow
+        port: "{{ http_port }}"
+        proto: tcp
+
+    # Sets Up PHP Info Page
+    - name: Sets Up PHP Info Page
+      template:
+        src: "files/info.php.j2"
+        dest: "/var/www/html/info.php"
+
+  handlers:
+    - name: Reload Nginx
+      service:
+        name: nginx
+        state: reloaded
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
